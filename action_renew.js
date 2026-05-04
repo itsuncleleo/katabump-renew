@@ -864,7 +864,7 @@ async function solveAltchaIfPresent(page, stageName = "Renew阶段", maxAttempts
                                     }
 
                                     try { await saveViewportScreenshot(page, skipScreenshot); } catch (e) {}
-                                    await sendTelegramMessage(`⏳ *${escapeMarkdown(user.username)}*\n暂无法续期，下次可续期时间: ${dateStr}`, skipScreenshot);
+                                    //await sendTelegramMessage(`⏳ *${escapeMarkdown(user.username)}*\n暂无法续期，下次可续期时间: ${dateStr}`, skipScreenshot);
                                     break;
                                 }
                                 await page.waitForTimeout(200);

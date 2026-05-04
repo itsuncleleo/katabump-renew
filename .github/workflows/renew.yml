@@ -6,6 +6,10 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch: # 允许手动触发
 
+# ⚠️ 必须加上写入权限，否则最后一步无法把时间戳保存到 GitHub 仓库
+permissions:
+  contents: write        
+
 jobs:
   renew:
     runs-on: ubuntu-latest
@@ -15,12 +19,38 @@ jobs:
     steps:
     - uses: actions/checkout@v5
     
+    - name: 🧠 检查时间间隔 (不满 3 天则跳过)
+      id: check
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "👋 手动触发，强制执行脚本。"
+          echo "run_script=true" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        # 使用专属的时间戳文件，避免和 JustRunMy 冲突
+        if [ -f katabump_success.txt ]; then
+          LAST_RUN=$(cat katabump_success.txt)
+          NOW=$(date +%s)
+          DIFF=$(( (NOW - LAST_RUN) / 86400 ))
+          if [ $DIFF -lt 3 ]; then
+            echo "⏳ 距离上次成功不足 3 天，今天已经执行过了，继续休眠！"
+            echo "run_script=false" >> $GITHUB_ENV
+            exit 0
+          fi
+        fi
+        
+        echo "✅ 达到执行间隔或无记录，即将启动续期..."
+        echo "run_script=true" >> $GITHUB_ENV
+
     - name: Setup Node.js
+      if: env.run_script == 'true'
       uses: actions/setup-node@v5
       with:
         node-version: '20'
         
     - name: Install Dependencies
+      if: env.run_script == 'true'
       run: |
         sudo apt-get update
         sudo apt-get install -y xvfb
@@ -28,9 +58,8 @@ jobs:
         npx playwright install-deps chrome
       
     - name: Run Renew Script
+      if: env.run_script == 'true'
       env:
-        # 将 USERS_JSON 配置在 GitHub Repository Secrets 中
-        # 格式: [{"username": "xxx", "password": "xxx"}, ...]
         USERS_JSON: ${{ secrets.USERS_JSON }}
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -38,8 +67,19 @@ jobs:
       # 使用 xvfb-run 模拟有头环境运行
       run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node action_renew.js
 
+    - name: 💾 记录成功时间并推送至仓库
+      # 只有当脚本真正运行了，且前面没有报错 (success) 时，才记录今天的时间
+      if: success() && env.run_script == 'true'
+      run: |
+        date +%s > katabump_success.txt
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add katabump_success.txt
+        git diff --quiet && git diff --staged --quiet || (git commit -m "chore: 记录 KataBump 续期时间 [skip ci]" && git push)
+        echo "🎉 续期时间点已存档！接下来 3 天将自动休眠。"
+
     - name: Upload Screenshots
-      if: always()
+      if: always() && env.run_script == 'true'
       uses: actions/upload-artifact@v5
       with:
         name: screenshots

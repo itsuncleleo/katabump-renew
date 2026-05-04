@@ -2,11 +2,9 @@ name: Katabump Auto Renew
 
 on:
   schedule:
-    # 每天 UTC 0点 (北京时间 8点) 运行
     - cron: '0 0 * * *'
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch:
 
-# ⚠️ 必须加上写入权限，否则最后一步无法把时间戳保存到 GitHub 仓库
 permissions:
   contents: write        
 
@@ -28,7 +26,6 @@ jobs:
           exit 0
         fi
         
-        # 使用专属的时间戳文件，避免和 JustRunMy 冲突
         if [ -f katabump_success.txt ]; then
           LAST_RUN=$(cat katabump_success.txt)
           NOW=$(date +%s)
@@ -57,26 +54,36 @@ jobs:
         npm install
         npx playwright install-deps chrome
       
-    - name: Run Renew Script
+    - name: Run Renew Script and Analyze Log
       if: env.run_script == 'true'
       env:
         USERS_JSON: ${{ secrets.USERS_JSON }}
         HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-      # 使用 xvfb-run 模拟有头环境运行
-      run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node action_renew.js
+      run: |
+        # 1. 运行 JS 脚本，并使用 tee 命令把输出日志同时保存到 run_log.txt 文件中
+        xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node action_renew.js | tee run_log.txt
+        
+        # 2. 检查日志中是否包含真正的成功标志
+        if grep -q "Renew successful" run_log.txt; then
+          echo "🎉 检测到真实的续期成功标志！"
+          echo "REAL_SUCCESS=true" >> $GITHUB_ENV
+        else
+          echo "ℹ️ 本次运行未发生真实续期（可能还没到时间，或发生错误）。"
+          echo "REAL_SUCCESS=false" >> $GITHUB_ENV
+        fi
 
-    - name: 💾 记录成功时间并推送至仓库
-      # 只有当脚本真正运行了，且前面没有报错 (success) 时，才记录今天的时间
-      if: success() && env.run_script == 'true'
+    - name: 💾 记录真实成功时间并推送至仓库
+      # ⚠️ 核心修复：必须同时满足运行了、没报错、且日志里确认了“真实成功”
+      if: success() && env.run_script == 'true' && env.REAL_SUCCESS == 'true'
       run: |
         date +%s > katabump_success.txt
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git add katabump_success.txt
-        git diff --quiet && git diff --staged --quiet || (git commit -m "chore: 记录 KataBump 续期时间 [skip ci]" && git push)
-        echo "🎉 续期时间点已存档！接下来 3 天将自动休眠。"
+        git diff --quiet && git diff --staged --quiet || (git commit -m "chore: 记录 KataBump 真实续期时间 [skip ci]" && git push)
+        echo "🎉 真正的续期时间点已存档！接下来 3 天将自动休眠。"
 
     - name: Upload Screenshots
       if: always() && env.run_script == 'true'

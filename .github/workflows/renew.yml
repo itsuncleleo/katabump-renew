@@ -58,7 +58,7 @@ jobs:
       if: env.run_script == 'true'
       env:
         USERS_JSON: ${{ secrets.USERS_JSON }}
-        HTTP_PROXY: ${{ secrets.HTTP_PROXY }}
+        PROXY_URL: ${{ secrets.PROXY_URL }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       run: |

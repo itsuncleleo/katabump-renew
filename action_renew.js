@@ -573,7 +573,7 @@ async function solveAltchaIfPresent(page, stageName = "Renew阶段", maxAttempts
         // --- 修改点2：Playwright 原生启动，完美支持 SOCKS5 及其账号密码 ---
         context = await chromium.launchPersistentContext('/tmp/chrome_user_data', {
             executablePath: CHROME_PATH,
-            headless: true, 
+            headless: false, 
             viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
             args: [
                 '--no-sandbox',
@@ -685,7 +685,11 @@ async function solveAltchaIfPresent(page, stageName = "Renew阶段", maxAttempts
                 await page.waitForTimeout(1000);
                 await page.getByRole('link', { name: 'See' }).first().click();
             } catch (e) {
-                console.log('未找到 "See" 按钮 (可能登录未成功或界面变动)。');
+                console.log('未找到 "See" 按钮 (可能登录未成功或界面变动)。正在保存现场截图...');
+                const failDir = path.join(process.cwd(), 'screenshots');
+                if (!fs.existsSync(failDir)) fs.mkdirSync(failDir, { recursive: true });
+                const safeName = user.username.replace(/[^a-z0-9]/gi, '_');
+                try { await saveViewportScreenshot(page, path.join(failDir, `${safeName}_login_stuck.png`)); } catch (err) {}
                 continue;
             }
 

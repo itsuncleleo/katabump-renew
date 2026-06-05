@@ -58,10 +58,19 @@ jobs:
       if: env.run_script == 'true'
       env:
         USERS_JSON: ${{ secrets.USERS_JSON }}
-        PROXY_URL: ${{ secrets.PROXY_URL }}
+        # ⚠️ 注意：这里环境变量写死为本地转换后的无密码端口，欺骗 Chrome
+        PROXY_URL: http://127.0.0.1:8080
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       run: |
+        # 0. 下载并启动 gost 代理转换器 (后台静默运行)
+        echo "🔧 正在启动本地代理转换中枢..."
+        curl -sL https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz | gzip -d > gost
+        chmod +x gost
+        # 让 gost 监听本地 8080 端口，并把流量带着密码转发给你的 SOCKS5 节点
+        ./gost -L http://127.0.0.1:8080 -F ${{ secrets.PROXY_URL }} &
+        sleep 2
+        
         # 1. 运行 JS 脚本，并使用 tee 命令把输出日志同时保存到 run_log.txt 文件中
         xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node action_renew.js | tee run_log.txt
         

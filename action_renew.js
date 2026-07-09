@@ -181,6 +181,10 @@ async function attemptTurnstileCdp(page) {
     // 关键防御：强制唤醒前台，防止 xvfb 虚拟环境中事件丢失
     await page.bringToFront().catch(() => {});
     
+    // 补充防御：增加全局鼠标轨迹熵 (CF 会在主页面收集前置鼠标活动)
+    await page.mouse.move(150 + Math.random() * 300, 200 + Math.random() * 200, { steps: 15 });
+    await page.waitForTimeout(500 + Math.random() * 500);
+
     const frames = page.frames();
     for (const frame of frames) {
         if (frame.url().includes('challenges.cloudflare.com') || frame.url().includes('turnstile')) {
@@ -189,14 +193,16 @@ async function attemptTurnstileCdp(page) {
                 if (!iframeElement) continue;
 
                 const box = await iframeElement.boundingBox();
-                // 过滤掉不可见的暗桩盾或未渲染完成的残缺盾
                 if (!box || box.width < 50 || box.height < 10) continue; 
 
-                // 物理规律定位：CF 盾的复选框永远固定在 iframe 距左边界 30px、垂直居中的位置
-                const clickX = box.x + 30 + (Math.random() * 8 - 4); // 随机像素抖动防检测
+                const clickX = box.x + 30 + (Math.random() * 8 - 4); 
                 const clickY = box.y + (box.height / 2) + (Math.random() * 4 - 2);
 
                 console.log(`>> 定位到 CF 盾 iframe (宽:${box.width.toFixed(0)}, 高:${box.height.toFixed(0)})`);
+                
+                // 补充防御：在等待前，先将鼠标自然滑入 CF 盾区域并悬停
+                await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 20 });
+                
                 console.log('>> 强制等待 3.5 秒，让 CF 后台 PoW 算力跑完再点...');
                 await page.waitForTimeout(3500);
 
@@ -603,8 +609,13 @@ async function solveAltchaIfPresent(page, stageName = "Renew阶段", maxAttempts
             
             await page.waitForTimeout(3000); 
 
-            // ➡️ 【登录阶段专属】：解决 Turnstile
-            await solveTurnstileIfPresent(page, "登录阶段", 10, 5000);
+            
+            // ➡️ 【登录阶段专属】：解决 Turnstile（将最大尝试次数缩减为 3 次，增加单次等待缓冲）
+            const turnstileOk = await solveTurnstileIfPresent(page, "登录阶段", 3, 6000);
+            if (!turnstileOk) {
+                console.error(`   >> ❌ CF 盾多次验证均被拒绝，当前机房 IP 或指纹已被严重风控，强行跳过此账号。`);
+                continue; // 退出当前用户的处理，防止死磕
+            }
 
             console.log('正在输入凭据...');
             try {

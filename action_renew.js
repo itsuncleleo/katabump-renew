@@ -198,32 +198,23 @@ function getUsers() {
     return [];
 }
 
-// --- 核心辅助：通过 CDP 派发鼠标点击事件 ---
+// --- 核心辅助：通过 Playwright 原生鼠标 API 模拟真实轨迹点击事件 ---
 async function dispatchCdpClick(page, x, y) {
-    const client = await page.context().newCDPSession(page);
     try {
-        await client.send('Input.dispatchMouseEvent', {
-            type: 'mousePressed',
-            x: x,
-            y: y,
-            button: 'left',
-            clickCount: 1
-        });
-        await new Promise(r => setTimeout(r, 50 + Math.random() * 100)); // 模拟人手点击延迟
-        await client.send('Input.dispatchMouseEvent', {
-            type: 'mouseReleased',
-            x: x,
-            y: y,
-            button: 'left',
-            clickCount: 1
-        });
-        console.log(`>> CDP 坐标 (${x.toFixed(2)}, ${y.toFixed(2)}) 点击已发送。`);
+        // 模拟人类鼠标滑动轨迹 (steps 控制滑动细腻度)
+        await page.mouse.move(x, y, { steps: 15 });
+        await page.waitForTimeout(200 + Math.random() * 300); // 悬停犹豫
+        await page.mouse.down();
+        await page.waitForTimeout(50 + Math.random() * 100); // 按下时长
+        await page.mouse.up();
+        
+        // 点击后顺势把鼠标移开，降低机器行为特征
+        await page.mouse.move(x + (Math.random() * 50 - 25), y + (Math.random() * 50 - 25), { steps: 5 });
+        console.log(`>> 拟人化坐标 (${x.toFixed(2)}, ${y.toFixed(2)}) 滑动并点击已发送。`);
         return true;
     } catch (e) {
-        console.log('>> CDP 点击失败:', e.message);
+        console.log('>> 拟人化点击失败:', e.message);
         return false;
-    } finally {
-        await client.detach().catch(() => {});
     }
 }
 
@@ -244,6 +235,10 @@ async function attemptTurnstileCdp(page) {
                 if (!box) continue;
                 const clickX = box.x + (box.width * data.xRatio);
                 const clickY = box.y + (box.height * data.yRatio);
+                
+                console.log('>> 强制等待 2 秒以确保 CF 盾完全初始化...');
+                await page.waitForTimeout(2000);
+                
                 return await dispatchCdpClick(page, clickX, clickY);
             }
         } catch (e) { }

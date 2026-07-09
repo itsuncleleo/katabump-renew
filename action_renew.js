@@ -69,51 +69,7 @@ if (PROXY_ENV) {
 }
 
 // --- 注入脚本：Hook Shadow DOM 获取 Turnstile 坐标 ---
-const INJECTED_SCRIPT = `
-(function() {
-    if (window.self === window.top) return;
-    try {
-        function getRandomInt(min, max) {
-            return Math.floor(Math.random() * (max - min + 1)) + min;
-        }
-        let screenX = getRandomInt(800, 1200);
-        let screenY = getRandomInt(400, 600);
-        Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
-        Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
-    } catch (e) { }
-
-    try {
-        const originalAttachShadow = Element.prototype.attachShadow;
-        Element.prototype.attachShadow = function(init) {
-            const shadowRoot = originalAttachShadow.call(this, init);
-            if (shadowRoot) {
-                const checkAndReport = () => {
-                    const checkbox = shadowRoot.querySelector('input[type="checkbox"]');
-                    if (checkbox) {
-                        const rect = checkbox.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0 && window.innerWidth > 0 && window.innerHeight > 0) {
-                            const xRatio = (rect.left + rect.width / 2) / window.innerWidth;
-                            const yRatio = (rect.top + rect.height / 2) / window.innerHeight;
-                            window.__turnstile_data = { xRatio, yRatio };
-                            return true;
-                        }
-                    }
-                    return false;
-                };
-                if (!checkAndReport()) {
-                    const observer = new MutationObserver(() => {
-                        if (checkAndReport()) observer.disconnect();
-                    });
-                    observer.observe(shadowRoot, { childList: true, subtree: true });
-                }
-            }
-            return shadowRoot;
-        };
-    } catch (e) {
-        console.error('[注入] Hook attachShadow 失败:', e);
-    }
-})();
-`;
+const INJECTED_SCRIPT = `// 已彻底废弃。CF盾已升级，会检测出 MouseEvent 和 ShadowDOM 的原型链篡改并直接拉黑。`;
 
 async function configurePageViewport(page) {
     try {
@@ -222,26 +178,33 @@ async function dispatchCdpClick(page, x, y) {
 // ========== 1. TURNSTILE 专区 (登录用) ========
 // ==========================================
 async function attemptTurnstileCdp(page) {
+    // 关键防御：强制唤醒前台，防止 xvfb 虚拟环境中事件丢失
+    await page.bringToFront().catch(() => {});
+    
     const frames = page.frames();
     for (const frame of frames) {
-        try {
-            const data = await frame.evaluate(() => window.__turnstile_data).catch(() => null);
-            if (data) {
-                console.log('>> 发现 Turnstile 数据。比例:', data);
-                await frame.evaluate(() => { window.__turnstile_data = null; }).catch(() => {});
+        if (frame.url().includes('challenges.cloudflare.com') || frame.url().includes('turnstile')) {
+            try {
                 const iframeElement = await frame.frameElement();
                 if (!iframeElement) continue;
+
                 const box = await iframeElement.boundingBox();
-                if (!box) continue;
-                const clickX = box.x + (box.width * data.xRatio);
-                const clickY = box.y + (box.height * data.yRatio);
-                
-                console.log('>> 强制等待 2 秒以确保 CF 盾完全初始化...');
-                await page.waitForTimeout(2000);
-                
+                // 过滤掉不可见的暗桩盾或未渲染完成的残缺盾
+                if (!box || box.width < 50 || box.height < 10) continue; 
+
+                // 物理规律定位：CF 盾的复选框永远固定在 iframe 距左边界 30px、垂直居中的位置
+                const clickX = box.x + 30 + (Math.random() * 8 - 4); // 随机像素抖动防检测
+                const clickY = box.y + (box.height / 2) + (Math.random() * 4 - 2);
+
+                console.log(`>> 定位到 CF 盾 iframe (宽:${box.width.toFixed(0)}, 高:${box.height.toFixed(0)})`);
+                console.log('>> 强制等待 3.5 秒，让 CF 后台 PoW 算力跑完再点...');
+                await page.waitForTimeout(3500);
+
                 return await dispatchCdpClick(page, clickX, clickY);
+            } catch (e) {
+                console.log('>> CF iframe 处理异常:', e.message);
             }
-        } catch (e) { }
+        }
     }
     return false;
 }
@@ -576,7 +539,8 @@ async function solveAltchaIfPresent(page, stageName = "Renew阶段", maxAttempts
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--no-first-run',
-                '--no-default-browser-check'
+                '--no-default-browser-check',
+                '--disable-blink-features=AutomationControlled' // 隐藏 Chrome 底层 WebDriver 特征
             ],
             proxy: PROXY_CONFIG ? {
                 server: PROXY_CONFIG.server,

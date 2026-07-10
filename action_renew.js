@@ -49,23 +49,16 @@ const VIEWPORT_HEIGHT = 720;
 const RENEW_MAX_ATTEMPTS = 3;
 process.env.NO_PROXY = 'localhost,127.0.0.1';
 
-// --- 修改点1：兼容 PROXY_URL 和 HTTP_PROXY 环境变量 ---
 const PROXY_ENV = process.env.PROXY_URL || process.env.HTTP_PROXY;
 let PROXY_CONFIG = null;
 
 if (PROXY_ENV) {
-    try {
-        const proxyUrl = new URL(PROXY_ENV);
-        PROXY_CONFIG = {
-            server: `${proxyUrl.protocol}//${proxyUrl.hostname}:${proxyUrl.port}`,
-            username: proxyUrl.username ? decodeURIComponent(proxyUrl.username) : undefined,
-            password: proxyUrl.password ? decodeURIComponent(proxyUrl.password) : undefined
-        };
-        console.log(`[代理] 检测到配置: 服务器=${PROXY_CONFIG.server}, 认证=${PROXY_CONFIG.username ? '是' : '否'}`);
-    } catch (e) {
-        console.error('[代理] 代理格式无效，请检查环境变量。');
-        process.exit(1);
-    }
+    console.log(`[代理] 挂载高质量代理 (经由本地 Gost 中转): http://127.0.0.1:8080`);
+    PROXY_CONFIG = {
+        server: "http://127.0.0.1:8080"
+    };
+} else {
+    console.log(`[代理] ⚠️ 未检测到代理配置，将使用直连 (极易被拦截)。`);
 }
 
 // --- 注入脚本：Hook Shadow DOM 获取 Turnstile 坐标 ---
@@ -549,9 +542,7 @@ async function solveAltchaIfPresent(page, stageName = "Renew阶段", maxAttempts
                 '--disable-blink-features=AutomationControlled' // 隐藏 Chrome 底层 WebDriver 特征
             ],
             proxy: PROXY_CONFIG ? {
-                server: PROXY_CONFIG.server,
-                username: PROXY_CONFIG.username,
-                password: PROXY_CONFIG.password
+                server: PROXY_CONFIG.server
             } : undefined
         });
         console.log('浏览器上下文启动成功！');

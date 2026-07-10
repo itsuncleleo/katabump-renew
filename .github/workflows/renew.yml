@@ -15,7 +15,7 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v4
     
     - name: 🧠 检查时间间隔 (不满 3 天则跳过)
       id: check
@@ -42,7 +42,7 @@ jobs:
 
     - name: Setup Node.js
       if: env.run_script == 'true'
-      uses: actions/setup-node@v5
+      uses: actions/setup-node@v4
       with:
         node-version: '20'
         
@@ -54,22 +54,38 @@ jobs:
         npm install
         npx playwright install-deps chrome
       
-    - name: Run Renew Script and Analyze Log
+    - name: ⚙️ 启动中转代理并执行续期 (进程合并)
       if: env.run_script == 'true'
       env:
         USERS_JSON: ${{ secrets.USERS_JSON }}
-        # ⚠️ 注意：这里环境变量写死为本地转换后的无密码端口，欺骗 Chrome
-        PROXY_URL: http://127.0.0.1:8080
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        # 传给 Gost 的远端 SOCKS5 节点
+        REMOTE_PROXY: ${{ secrets.PROXY_URL }}
+        # 传给 JS 脚本的本地无密端口
+        PROXY_URL: http://127.0.0.1:8080
       run: |
-        # 0. 下载并启动 gost 代理转换器 (后台静默运行)
+        # 0. 检查远端节点注入状态
+        if [ -z "$REMOTE_PROXY" ]; then
+          echo "❌ 致命错误: PROXY_URL 远端节点未读取到，请检查 Secrets！"
+          exit 1
+        fi
+
         echo "🔧 正在启动本地代理转换中枢..."
         curl -sL https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz | gzip -d > gost
         chmod +x gost
+        
         # 让 gost 监听本地 8080 端口，并把流量带着密码转发给你的 SOCKS5 节点
-        ./gost -L http://127.0.0.1:8080 -F ${{ secrets.PROXY_URL }} &
-        sleep 2
+        ./gost -L http://127.0.0.1:8080 -F "$REMOTE_PROXY" > gost.log 2>&1 &
+        
+        # 验证存活
+        sleep 3
+        if ! pgrep -x "gost" > /dev/null; then
+          echo "❌ Gost 启动闪退！底层日志如下："
+          cat gost.log
+          exit 1
+        fi
+        echo "✅ Gost 本地中转服务已在 8080 端口稳定运行。"
         
         # 1. 运行 JS 脚本，并使用 tee 命令把输出日志同时保存到 run_log.txt 文件中
         xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" node action_renew.js | tee run_log.txt
@@ -84,7 +100,7 @@ jobs:
         fi
 
     - name: 💾 记录真实成功时间并推送至仓库
-      # ⚠️ 核心修复：必须同时满足运行了、没报错、且日志里确认了“真实成功”
+      # 必须同时满足运行了、没报错、且日志里确认了“真实成功”
       if: success() && env.run_script == 'true' && env.REAL_SUCCESS == 'true'
       run: |
         date +%s > katabump_success.txt
@@ -96,7 +112,7 @@ jobs:
 
     - name: Upload Screenshots
       if: always() && env.run_script == 'true'
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v4
       with:
         name: screenshots
         path: screenshots/

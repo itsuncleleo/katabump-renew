@@ -6,14 +6,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write        
+  contents: write
+  actions: write
 
 jobs:
   renew:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     
     - name: 🧠 检查时间间隔 (不满 3 天则跳过)
       id: check
@@ -40,9 +41,9 @@ jobs:
 
     - name: Setup Node.js
       if: env.run_script == 'true'
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
-        node-version: '20'
+        node-version: '22'
         
     - name: Install Dependencies
       if: env.run_script == 'true'
@@ -102,7 +103,17 @@ jobs:
 
     - name: Upload Screenshots
       if: always() && env.run_script == 'true'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: screenshots
         path: screenshots/
+
+    - name: 🧹 清理历史运行记录
+      if: always()
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        delete_workflow_pattern: ${{ github.workflow }}
+        retain_days: 0
+        keep_minimum_runs: 5

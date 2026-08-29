@@ -7,6 +7,7 @@ import subprocess
 import requests
 from seleniumbase import SB
 
+# 配置环境变量
 EMAIL        = os.environ.get("KATABUMP_EMAIL") or ""
 PASSWORD     = os.environ.get("KATABUMP_PASSWORD") or ""
 TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""
@@ -42,7 +43,6 @@ def send_tg_message(status_icon, status_text, time_left=""):
 
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TG_CHAT_ID, "text": text}
-    
     try:
         r = requests.post(url, json=payload, timeout=10)
         if r.status_code == 200:
@@ -52,32 +52,9 @@ def send_tg_message(status_icon, status_text, time_left=""):
     except Exception as e:
         print(f"⚠️ Telegram 通知发送异常: {e}")
 
-_EXPAND_JS = """
-(function() {
-    var ts = document.querySelector('input[name="cf-turnstile-response"]');
-    if (!ts) return 'no-turnstile';
-    var el = ts;
-    for (var i = 0; i < 20; i++) {
-        el = el.parentElement;
-        if (!el) break;
-        var s = window.getComputedStyle(el);
-        if (s.overflow === 'hidden' || s.overflowX === 'hidden' || s.overflowY === 'hidden')
-            el.style.overflow = 'visible';
-        el.style.minWidth = 'max-content';
-    }
-    document.querySelectorAll('iframe').forEach(function(f){
-        if (f.src && f.src.includes('challenges.cloudflare.com')) {
-            f.style.width = '300px'; f.style.height = '65px';
-            f.style.minWidth = '300px';
-            f.style.visibility = 'visible'; f.style.opacity = '1';
-        }
-    });
-    return 'done';
-})()
-"""
-_EXISTS_JS = """(function(){ return document.querySelector('input[name="cf-turnstile-response"]') !== null; })()"""
-_SOLVED_JS = """(function(){ var i = document.querySelector('input[name="cf-turnstile-response"]'); return !!(i && i.value && i.value.length > 20); })()"""
+# ===== JS注入脚本 (保留给弹窗内的 ALTCHA 验证) =====
 _WININFO_JS = """(function(){ return { sx: window.screenX || 0, sy: window.screenY || 0, oh: window.outerHeight, ih: window.innerHeight }; })()"""
+
 _ALTCHA_EXPAND_JS = """
 (function() {
     var modal = document.querySelector('div.modal.show') || document;
@@ -104,6 +81,7 @@ _ALTCHA_EXPAND_JS = """
     return null;
 })()
 """
+
 _ALTCHA_SOLVED_JS = """
 (function(){
     var modal = document.querySelector('div.modal.show') || document;
@@ -122,23 +100,6 @@ _ALTCHA_SOLVED_JS = """
 })()
 """
 
-def js_fill_input(sb, selector: str, text: str):
-    safe_text = text.replace('\\', '\\\\').replace('"', '\\"')
-    sb.execute_script(f"""
-    (function(){{
-        var el = document.querySelector('{selector}');
-        if (!el) return;
-        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-        if (nativeInputValueSetter) {{
-            nativeInputValueSetter.call(el, "{safe_text}");
-        }} else {{
-            el.value = "{safe_text}";
-        }}
-        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    }})()
-    """)
-
 def _activate_window():
     for cls in ["chrome", "chromium", "Chromium", "Chrome", "google-chrome"]:
         try:
@@ -149,7 +110,8 @@ def _activate_window():
                 time.sleep(0.2)
                 return
         except Exception: pass
-    try: subprocess.run(["xdotool", "getactivewindow", "windowactivate"], timeout=3, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run(["xdotool", "getactivewindow", "windowactivate"], timeout=3, stderr=subprocess.DEVNULL)
     except Exception: pass
 
 def _xdotool_click(x: int, y: int):
@@ -161,37 +123,12 @@ def _xdotool_click(x: int, y: int):
     except Exception:
         os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
 
-def handle_turnstile(sb) -> bool:
-    print("🔍 处理 Cloudflare Turnstile 验证...")
-    time.sleep(2)
-    if sb.execute_script(_SOLVED_JS): return True
-
-    for _ in range(3):
-        try: sb.execute_script(_EXPAND_JS)
-        except Exception: pass
-        time.sleep(0.5)
-
-    for attempt in range(6):
-        if sb.execute_script(_SOLVED_JS): return True
-        print(f"🖱️ 第 {attempt + 1} 次调用 uc_gui_click_captcha...")
-        try: sb.uc_gui_click_captcha()
-        except Exception as e: print(f"⚠️ uc_gui_click_captcha 调用异常: {e}")
-
-        for _ in range(16):
-            time.sleep(0.5)
-            if sb.execute_script(_SOLVED_JS): return True
-    return False
+# ===== 核心流程 =====
 
 def login(sb) -> bool:
     print(f"🌐 打开登录页面: {BASE_URL}/auth/login")
     sb.uc_open_with_reconnect(BASE_URL + "/auth/login", reconnect_time=8)
     time.sleep(8)
-
-    print("⏳ 等待 Cloudflare 验证通过...")
-    for i in range(30):
-        page_src = sb.get_page_source() or ""
-        if 'input[name="email"]' in page_src.lower() or 'name="email"' in page_src.lower(): break
-        time.sleep(1)
 
     try:
         sb.wait_for_element('input[type="email"]', timeout=15)
@@ -203,6 +140,7 @@ def login(sb) -> bool:
             sb.save_screenshot("login_load_fail.png")
             return False
 
+    print("🍪 关闭可能的 Cookie 弹窗...")
     try:
         for btn in sb.find_elements("button"):
             if "Accept" in (btn.text or ""):
@@ -212,63 +150,39 @@ def login(sb) -> bool:
     except Exception: pass
 
     print(f"📧 填写邮箱...")
-    # 弃用 JS 注入，改用原生拟人化输入，彻底激活 Vue/React 数据绑定
     sb.type('input[type="email"], input[type="Email"]', EMAIL)
     time.sleep(1)
     
     print("🔑 填写密码...")
     sb.type('input[type="password"]', PASSWORD)
-    time.sleep(3)
+    time.sleep(2)
 
-    print("⏳ 检测 Turnstile 验证框...")
-    ts_found = False
-    for i in range(10):
-        if sb.execute_script(_EXISTS_JS):
-            ts_found = True
-            print("✅ 检测到 Turnstile 验证组件")
-            break
-        time.sleep(1)
-
-    if ts_found:
-        if not handle_turnstile(sb):
-            sb.save_screenshot("login_turnstile_fail.png")
-            return False
+    print("⏳ 检测 Cloudflare Turnstile 验证框...")
+    if sb.is_element_present('iframe[src*="challenges.cloudflare.com"]'):
+        print("✅ 发现 Turnstile 组件，启动底层物理模拟点击...")
+        try:
+            sb.uc_gui_click_captcha()
+            time.sleep(4)
+        except Exception as e:
+            print(f"⚠️ 物理点击警告 (可能已通过): {e}")
+    else:
+        print("ℹ️ 未发现 Turnstile 组件，可能已静默通过。")
 
     print("🖱️ 提交表单...")
-    # 改为显式点击登录按钮，替代回车键提交
     try:
-        sb.click('button[type="submit"]')
+        sb.click('//button[contains(translate(., "LOGIN", "login"), "login")]')
     except Exception:
         sb.press_keys('input[type="password"]', '\n')
 
     print("⏳ 等待登录跳转...")
-    for _ in range(12):
+    for _ in range(15):
         time.sleep(1)
         cur_url = sb.get_current_url().lower()
-        # 严谨判断：URL 中不能包含 login，且必须包含 dashboard
         if "login" not in cur_url and "dashboard" in cur_url: 
-            break
+            print("✅ 登录成功！")
+            return True
 
-    cur_url = sb.get_current_url().lower()
-    if "login" not in cur_url and "dashboard" in cur_url:
-        print("✅ 登录成功！")
-        return True
-    
     print("❌ 登录失败，页面未发生有效跳转。")
-    sb.save_screenshot("login_failed.png")
-    return False
-
-    print("🖱️ 提交表单...")
-    sb.press_keys('input[name="password"]', '\n')
-
-    for _ in range(12):
-        time.sleep(1)
-        if "dashboard" in sb.get_current_url().lower(): break
-
-    if "dashboard" in sb.get_current_url().lower():
-        print("✅ 登录成功！")
-        return True
-    
     sb.save_screenshot("login_failed.png")
     return False
 
@@ -334,7 +248,6 @@ def _open_renew_modal(sb) -> bool:
     except Exception:
         return False
 
-# ================= 恢复 ALTCHA 验证逻辑 =================
 def _solve_altcha(sb) -> bool:
     print("\n🔐 处理 ALTCHA 人机验证...")
     time.sleep(2)
@@ -381,7 +294,6 @@ def _solve_altcha(sb) -> bool:
         except Exception: pass
 
     return False
-# =======================================================
 
 def _submit_renew(sb):
     print("🖱️  点击模态框中的 Renew 按钮...")

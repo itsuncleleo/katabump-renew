@@ -2,64 +2,120 @@ name: Katabump Auto Renew
 
 on:
   schedule:
-  - cron: '0 2 */3 * *'  # 每天 UTC 0点 (北京时间 8点) 运行,根据服务到期时间自行修改
-  workflow_dispatch: # 允许手动触发
+    - cron: '45 22 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
 
 jobs:
-  Renew-Katabump:
+  renew:
     runs-on: ubuntu-latest
-    permissions:
-      actions: write  
-      contents: read
     
     steps:
-    - uses: actions/checkout@v6
-    - name: ⚙ 设置 Python
-      uses: actions/setup-python@v6
+    - uses: actions/checkout@v5
+    
+    - name: 🧠 检查时间间隔 (不满 3 天则跳过)
+      id: check
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "👋 手动触发，强制执行脚本。"
+          echo "run_script=true" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        if [ -f katabump_success.txt ]; then
+          LAST_RUN=$(cat katabump_success.txt)
+          NOW=$(date +%s)
+          DIFF=$(( (NOW - LAST_RUN) / 86400 ))
+          if [ $DIFF -lt 3 ]; then
+            echo "⏳ 距离上次成功不足 3 天，今天已经执行过了，继续休眠！"
+            echo "run_script=false" >> $GITHUB_ENV
+            exit 0
+          fi
+        fi
+        
+        echo "✅ 达到执行间隔或无记录，即将启动续期..."
+        echo "run_script=true" >> $GITHUB_ENV
+
+    - name: Setup Python
+      if: env.run_script == 'true'
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-
-    - name: 🛠️ 安装系统依赖和python依赖
+        
+    - name: Install Dependencies
+      if: env.run_script == 'true'
       run: |
         sudo apt-get update
         sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
         pip install seleniumbase requests
         seleniumbase install chromedriver
-
-    - name: ⚙ 设置代理 (Gost)
-      env:
-        PROXY_URL: ${{ secrets.PROXY_URL }}
-      run: |
-        if [ -n "$PROXY_URL" ]; then
-          echo "🔧 启动 Gost 本地代理..."
-          wget -qO- https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz | zcat > gost
-          chmod +x gost
-          ./gost -L http://127.0.0.1:8080 -F "$PROXY_URL" > gost.log 2>&1 &
-          sleep 3
-        fi
-
-    - name: 🚀 运行续期脚本
+      
+    - name: ⚙️ 启动中转代理并执行续期 (进程合并)
+      if: env.run_script == 'true'
       env:
         USERS_JSON: ${{ secrets.USERS_JSON }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        PROXY_SERVER: "http://127.0.0.1:8080"
-        IS_PROXY: ${{ secrets.PROXY_URL != '' && 'true' || 'false' }}
+        REMOTE_PROXY: ${{ secrets.PROXY_URL }}
+        PROXY_SERVER: http://127.0.0.1:8080
+        IS_PROXY: 'true'
       run: |
-        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
-          python3 app.py
+        if [ -z "$REMOTE_PROXY" ]; then
+          echo "❌ 致命错误: PROXY_URL 远端节点未读取到，请检查 Secrets！"
+          exit 1
+        fi
+
+        echo "🔧 正在启动本地代理转换中枢..."
+        curl -sL https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz | gzip -d > gost
+        chmod +x gost
         
-    - name: 🧹 清理旧的工作流运行记录
-      if: always()
-      env:
-        GH_TOKEN: ${{ github.token }}
+        ./gost -L http://127.0.0.1:8080 -F "$REMOTE_PROXY" > gost.log 2>&1 &
+        
+        sleep 3
+        if ! pgrep -x "gost" > /dev/null; then
+          echo "❌ Gost 启动闪退！底层日志如下："
+          cat gost.log
+          exit 1
+        fi
+        echo "✅ Gost 本地中转服务已在 8080 端口稳定运行。"
+        
+        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python3 app.py | tee run_log.txt
+        
+        if grep -qiE "renewed|success|extended" run_log.txt; then
+          echo "🎉 检测到真实的续期成功标志！"
+          echo "REAL_SUCCESS=true" >> $GITHUB_ENV
+        else
+          echo "ℹ️ 本次运行未发生真实续期（可能还没到时间，或发生错误）。"
+          echo "REAL_SUCCESS=false" >> $GITHUB_ENV
+        fi
+
+    - name: 💾 记录真实成功时间并推送至仓库
+      if: success() && env.run_script == 'true' && env.REAL_SUCCESS == 'true'
       run: |
-        runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
-        count=0
-        for run_id in $runs; do
-          count=$((count + 1))
-          if [ $count -gt 1 ]; then
-            echo "删除运行记录: $run_id"
-            gh run delete $run_id || true
-          fi
-        done
+        date +%s > katabump_success.txt
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add katabump_success.txt
+        git diff --quiet && git diff --staged --quiet || (git commit -m "chore: 记录 KataBump 真实续期时间 [skip ci]" && git push)
+        echo "🎉 真正的续期时间点已存档！接下来 3 天将自动休眠。"
+
+    - name: Upload Screenshots
+      if: always() && env.run_script == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: screenshots
+        path: "*.png"
+        if-no-files-found: ignore
+
+    - name: 🧹 清理历史运行记录
+      if: always()
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        delete_workflow_pattern: ${{ github.workflow }}
+        retain_days: 0
+        keep_minimum_runs: 5

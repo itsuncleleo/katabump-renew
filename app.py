@@ -5,32 +5,42 @@ import os
 import time
 import subprocess
 import requests
+import json
 from seleniumbase import SB
 
-# 配置环境变量
-EMAIL        = os.environ.get("KATABUMP_EMAIL") or ""
-PASSWORD     = os.environ.get("KATABUMP_PASSWORD") or ""
 TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""
-
 BASE_URL = "https://dashboard.katabump.com"
 
-def send_tg_message(status_icon, status_text, time_left=""):
+# ===== 辅助功能 =====
+def get_users_from_json():
+    users_json = os.environ.get("USERS_JSON", "").strip()
+    if not users_json:
+        return []
+    try:
+        parsed = json.loads(users_json)
+        if isinstance(parsed, list):
+            return parsed
+        elif isinstance(parsed, dict) and "users" in parsed:
+            return parsed["users"]
+        elif isinstance(parsed, dict) and ("username" in parsed or "email" in parsed):
+            return [parsed]
+    except Exception as e:
+        print(f"❌ 解析 USERS_JSON 失败: {e}")
+    return []
+
+def send_tg_message(email, status_icon, status_text, time_left=""):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        print("ℹ️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 推送。")
         return
 
     local_time = time.gmtime(time.time() + 8 * 3600)
     current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
 
-    if '@' in EMAIL:
-        name, domain = EMAIL.split('@', 1)
-        if len(name) > 4:
-            masked_email = f"{name[:2]}****{name[-2:]}@{domain}"
-        else:
-            masked_email = f"{name}@{domain}"
+    if '@' in email:
+        name, domain = email.split('@', 1)
+        masked_email = f"{name[:2]}****{name[-2:]}@{domain}" if len(name) > 4 else f"{name}@{domain}"
     else:
-        masked_email = EMAIL[:2] + '****'
+        masked_email = email[:2] + '****'
 
     text = (
         f"🇫🇷 katabump 续期通知\n\n"
@@ -44,17 +54,12 @@ def send_tg_message(status_icon, status_text, time_left=""):
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TG_CHAT_ID, "text": text}
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code == 200:
-            print("📩 Telegram 通知发送成功！")
-        else:
-            print(f"⚠️ Telegram 通知发送失败: {r.text}")
-    except Exception as e:
-        print(f"⚠️ Telegram 通知发送异常: {e}")
+        requests.post(url, json=payload, timeout=10)
+    except Exception:
+        pass
 
-# ===== JS注入脚本 (保留给弹窗内的 ALTCHA 验证) =====
+# ===== JS 注入变量 =====
 _WININFO_JS = """(function(){ return { sx: window.screenX || 0, sy: window.screenY || 0, oh: window.outerHeight, ih: window.innerHeight }; })()"""
-
 _ALTCHA_EXPAND_JS = """
 (function() {
     var modal = document.querySelector('div.modal.show') || document;
@@ -62,18 +67,11 @@ _ALTCHA_EXPAND_JS = """
     for (var i = 0; i < iframes.length; i++) {
         var r = iframes[i].getBoundingClientRect();
         if (r.width > 0 && r.height > 0) {
-            iframes[i].style.width  = '300px';
-            iframes[i].style.height = '150px';
-            iframes[i].style.minWidth  = '300px';
-            iframes[i].style.minHeight = '150px';
-            iframes[i].style.visibility = 'visible';
-            iframes[i].style.opacity = '1';
+            iframes[i].style.width  = '300px'; iframes[i].style.height = '150px';
+            iframes[i].style.minWidth  = '300px'; iframes[i].style.minHeight = '150px';
+            iframes[i].style.visibility = 'visible'; iframes[i].style.opacity = '1';
             var el = iframes[i];
-            for (var j = 0; j < 10; j++) {
-                el = el.parentElement;
-                if (!el) break;
-                el.style.overflow = 'visible';
-            }
+            for (var j = 0; j < 10; j++) { el = el.parentElement; if (!el) break; el.style.overflow = 'visible'; }
             var r2 = iframes[i].getBoundingClientRect();
             return { cx: Math.round(r2.x + 30), cy: Math.round(r2.y + r2.height / 2) };
         }
@@ -81,7 +79,6 @@ _ALTCHA_EXPAND_JS = """
     return null;
 })()
 """
-
 _ALTCHA_SOLVED_JS = """
 (function(){
     var modal = document.querySelector('div.modal.show') || document;
@@ -91,11 +88,8 @@ _ALTCHA_SOLVED_JS = """
         if ((n.includes('altcha') || n.includes('captcha')) && inputs[i].value && inputs[i].value.length > 20) return true;
     }
     var cbs = modal.querySelectorAll('input[type="checkbox"]');
-    for (var j = 0; j < cbs.length; j++) {
-        if (cbs[j].disabled) return true;
-    }
-    var w = modal.querySelector('[data-state="verified"],.altcha--verified,.altcha-verified');
-    if (w) return true;
+    for (var j = 0; j < cbs.length; j++) if (cbs[j].disabled) return true;
+    if (modal.querySelector('[data-state="verified"],.altcha--verified,.altcha-verified')) return true;
     return false;
 })()
 """
@@ -124,21 +118,21 @@ def _xdotool_click(x: int, y: int):
         os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
 
 # ===== 核心流程 =====
-
-def login(sb) -> bool:
-    print(f"🌐 打开登录页面: {BASE_URL}/auth/login")
+def login(sb, email, password) -> bool:
+    print(f"\n🌐 打开登录页面: {BASE_URL}/auth/login")
     sb.uc_open_with_reconnect(BASE_URL + "/auth/login", reconnect_time=8)
     time.sleep(8)
 
+    if not email or not password:
+        print("❌ 致命错误：当前账号密码为空！")
+        return False
+
     try:
-        sb.wait_for_element('input[type="email"]', timeout=15)
+        sb.wait_for_element('input[name="email"]', timeout=15)
     except Exception:
-        try:
-            sb.wait_for_element('input[type="Email"]', timeout=5)
-        except Exception:
-            print("❌ 页面未加载出登录表单")
-            sb.save_screenshot("login_load_fail.png")
-            return False
+        print("❌ 页面未加载出登录表单")
+        sb.save_screenshot(f"{email}_login_load_fail.png")
+        return False
 
     print("🍪 关闭可能的 Cookie 弹窗...")
     try:
@@ -149,13 +143,31 @@ def login(sb) -> bool:
                 break
     except Exception: pass
 
-    print(f"📧 填写邮箱...")
-    sb.type('input[type="email"], input[type="Email"]', EMAIL)
-    time.sleep(1)
+    print(f"📧 填写邮箱: {email}")
+    email_sel = 'input[name="email"]'
+    sb.click(email_sel)
+    sb.clear(email_sel)
+    sb.type(email_sel, email)
     
     print("🔑 填写密码...")
-    sb.type('input[type="password"]', PASSWORD)
-    time.sleep(2)
+    pwd_sel = 'input[name="password"]'
+    sb.click(pwd_sel)
+    sb.clear(pwd_sel)
+    sb.type(pwd_sel, password)
+    time.sleep(1)
+
+    entered_email = sb.get_value(email_sel)
+    if not entered_email or len(entered_email) < 2:
+        print("⚠️ 原生输入失败，启用 JS 强力赋值兜底...")
+        safe_email = email.replace('"', '\\"')
+        safe_pwd = password.replace('"', '\\"')
+        sb.execute_script(f'''
+            var em = document.querySelector('input[name="email"]');
+            var pw = document.querySelector('input[name="password"]');
+            if(em) {{ em.value = "{safe_email}"; em.dispatchEvent(new Event('input', {{bubbles:true}})); }}
+            if(pw) {{ pw.value = "{safe_pwd}"; pw.dispatchEvent(new Event('input', {{bubbles:true}})); }}
+        ''')
+        time.sleep(1)
 
     print("⏳ 检测 Cloudflare Turnstile 验证框...")
     if sb.is_element_present('iframe[src*="challenges.cloudflare.com"]'):
@@ -164,15 +176,15 @@ def login(sb) -> bool:
             sb.uc_gui_click_captcha()
             time.sleep(4)
         except Exception as e:
-            print(f"⚠️ 物理点击警告 (可能已通过): {e}")
+            print(f"⚠️ 物理点击警告: {e}")
     else:
         print("ℹ️ 未发现 Turnstile 组件，可能已静默通过。")
 
     print("🖱️ 提交表单...")
     try:
-        sb.click('//button[contains(translate(., "LOGIN", "login"), "login")]')
+        sb.click('button[type="submit"]')
     except Exception:
-        sb.press_keys('input[type="password"]', '\n')
+        sb.press_keys(pwd_sel, '\n')
 
     print("⏳ 等待登录跳转...")
     for _ in range(15):
@@ -183,7 +195,7 @@ def login(sb) -> bool:
             return True
 
     print("❌ 登录失败，页面未发生有效跳转。")
-    sb.save_screenshot("login_failed.png")
+    sb.save_screenshot(f"{email}_login_failed.png")
     return False
 
 def _read_alert(sb):
@@ -192,13 +204,13 @@ def _read_alert(sb):
         return (el.text or "").strip()
     except Exception: return ""
 
-def _goto_server_detail(sb) -> bool:
+def _goto_server_detail(sb, email) -> bool:
     print("\n🖥️  正在进入服务器详情页...")
     time.sleep(5)
 
     alert_text = _read_alert(sb)
     if alert_text and "can't renew" in alert_text.lower():
-        send_tg_message("⏳", "未到续期时间", alert_text)
+        send_tg_message(email, "⏳", "未到续期时间", alert_text)
         return False
 
     selectors = ['a[href*="/servers/edit?id="]', 'td a[href*="/servers/edit"]', 'table a[href*="/servers/edit"]']
@@ -218,7 +230,7 @@ def _goto_server_detail(sb) -> bool:
         except Exception: pass
 
     if see_link is None:
-        sb.save_screenshot("servers_page_fail.png")
+        sb.save_screenshot(f"{email}_servers_page_fail.png")
         return False
 
     see_link.click()
@@ -311,7 +323,7 @@ def _submit_renew(sb):
         """)
     time.sleep(8)
 
-def _check_renew_result(sb):
+def _check_renew_result(sb, email):
     print("\n📋 检查续期结果...")
     alert_text = _read_alert(sb)
     if not alert_text:
@@ -321,16 +333,17 @@ def _check_renew_result(sb):
     if alert_text:
         low = alert_text.lower()
         if "can't renew" in low or "unable" in low:
-            send_tg_message("⏳", "未到续期时间", alert_text)
+            send_tg_message(email, "⏳", "未到续期时间", alert_text)
         elif any(kw in low for kw in ("renewed", "success", "extended")):
-            send_tg_message("✅", "续期成功", alert_text)
+            send_tg_message(email, "✅", "续期成功", alert_text)
+            print("【日志标志】续期成功") # 给 YAML 的 grep 使用
         else:
-            send_tg_message("ℹ️", "续期操作已执行", alert_text)
+            send_tg_message(email, "ℹ️", "续期操作已执行", alert_text)
     else:
-        send_tg_message("ℹ️", "续期操作已执行", "未检测到明确提示")
+        send_tg_message(email, "ℹ️", "续期操作已执行", "未检测到明确提示")
 
-def renew_server(sb):
-    if not _goto_server_detail(sb): return
+def renew_server(sb, email):
+    if not _goto_server_detail(sb, email): return
     if not _open_renew_modal(sb): return
 
     altcha_ok = _solve_altcha(sb)
@@ -338,9 +351,18 @@ def renew_server(sb):
         print("⚠️ ALTCHA 验证未通过，尝试强制提交...")
 
     _submit_renew(sb)
-    _check_renew_result(sb)
+    _check_renew_result(sb, email)
 
 def main():
+    print("#" * 25)
+    print("   katabump 多账号自动续期")
+    print("#" * 25)
+
+    users = get_users_from_json()
+    if not users:
+        print("❌ 未在 USERS_JSON 中读取到任何账号信息。")
+        return
+
     IS_PROXY = os.environ.get("IS_PROXY", "false").lower() == "true"
     proxy_str = os.environ.get("PROXY_SERVER", "").strip() or "http://127.0.0.1:1081"
     sb_kwargs = {"uc": True, "headless": False}
@@ -349,10 +371,19 @@ def main():
         sb_kwargs["proxy"] = proxy_str
     
     with SB(**sb_kwargs) as sb:
-        if login(sb):
-            renew_server(sb)
-        else:
-            send_tg_message("❌", "登录失败", "详情请查看截图")
+        for idx, user in enumerate(users):
+            email = user.get("username") or user.get("email") or ""
+            password = user.get("password") or ""
+            
+            print(f"\n[{idx+1}/{len(users)}] 开始处理账号: {email}")
+            
+            # 关键：清除上一个账号的会话 Cookie
+            sb.delete_all_cookies() 
+            
+            if login(sb, email, password):
+                renew_server(sb, email)
+            else:
+                send_tg_message(email, "❌", "登录失败", "详情请查看截图")
 
 if __name__ == "__main__":
     main()

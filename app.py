@@ -212,17 +212,20 @@ def login(sb) -> bool:
     except Exception: pass
 
     print(f"📧 填写邮箱...")
-    js_fill_input(sb, 'input[type="email"]', EMAIL)
+    # 弃用 JS 注入，改用原生拟人化输入，彻底激活 Vue/React 数据绑定
+    sb.type('input[type="email"], input[type="Email"]', EMAIL)
     time.sleep(1)
     
     print("🔑 填写密码...")
-    js_fill_input(sb, 'input[type="password"]', PASSWORD)
+    sb.type('input[type="password"]', PASSWORD)
     time.sleep(3)
 
+    print("⏳ 检测 Turnstile 验证框...")
     ts_found = False
     for i in range(10):
         if sb.execute_script(_EXISTS_JS):
             ts_found = True
+            print("✅ 检测到 Turnstile 验证组件")
             break
         time.sleep(1)
 
@@ -230,6 +233,30 @@ def login(sb) -> bool:
         if not handle_turnstile(sb):
             sb.save_screenshot("login_turnstile_fail.png")
             return False
+
+    print("🖱️ 提交表单...")
+    # 改为显式点击登录按钮，替代回车键提交
+    try:
+        sb.click('button[type="submit"]')
+    except Exception:
+        sb.press_keys('input[type="password"]', '\n')
+
+    print("⏳ 等待登录跳转...")
+    for _ in range(12):
+        time.sleep(1)
+        cur_url = sb.get_current_url().lower()
+        # 严谨判断：URL 中不能包含 login，且必须包含 dashboard
+        if "login" not in cur_url and "dashboard" in cur_url: 
+            break
+
+    cur_url = sb.get_current_url().lower()
+    if "login" not in cur_url and "dashboard" in cur_url:
+        print("✅ 登录成功！")
+        return True
+    
+    print("❌ 登录失败，页面未发生有效跳转。")
+    sb.save_screenshot("login_failed.png")
+    return False
 
     print("🖱️ 提交表单...")
     sb.press_keys('input[name="password"]', '\n')

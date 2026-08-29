@@ -118,6 +118,56 @@ def _xdotool_click(x: int, y: int):
         os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
 
 # ===== 核心流程 =====
+def handle_turnstile(sb) -> bool:
+    print("⏳ 正在等待 Cloudflare 验证码加载...")
+    ts_found = False
+    for _ in range(12):
+        if sb.is_element_present('iframe[src*="challenges.cloudflare.com"]'):
+            ts_found = True
+            break
+        time.sleep(1)
+        
+    if not ts_found:
+        print("ℹ️ 未发现 Turnstile 组件，可能已静默通过。")
+        return True
+        
+    print("✅ 发现 Turnstile 组件，等待其初始化...")
+    time.sleep(3)
+    
+    solved_js = """
+    var i = document.querySelector('input[name="cf-turnstile-response"]');
+    return !!(i && i.value && i.value.length > 20);
+    """
+    
+    if sb.execute_script(solved_js):
+        print("✅ Turnstile 已静默通过。")
+        return True
+        
+    for attempt in range(4):
+        print(f"🖱️ 第 {attempt + 1} 次启动底层物理模拟点击...")
+        try:
+            sb.execute_script("""
+                document.querySelectorAll('iframe').forEach(f => {
+                    if(f.src.includes('challenges.cloudflare.com')){
+                        f.style.width='300px'; f.style.height='65px'; 
+                        f.style.visibility='visible'; f.style.opacity='1';
+                    }
+                });
+            """)
+            time.sleep(0.5)
+            sb.uc_gui_click_captcha()
+        except Exception as e:
+            print(f"⚠️ 物理点击警告: {e}")
+            
+        for _ in range(12):
+            time.sleep(1)
+            if sb.execute_script(solved_js):
+                print("✅ Turnstile 验证通过！")
+                return True
+    
+    print("❌ 多次尝试物理点击均未通过验证。")
+    return False
+
 def login(sb, email, password) -> bool:
     print(f"\n🌐 打开登录页面: {BASE_URL}/auth/login")
     sb.uc_open_with_reconnect(BASE_URL + "/auth/login", reconnect_time=8)
@@ -169,16 +219,8 @@ def login(sb, email, password) -> bool:
         ''')
         time.sleep(1)
 
-    print("⏳ 检测 Cloudflare Turnstile 验证框...")
-    if sb.is_element_present('iframe[src*="challenges.cloudflare.com"]'):
-        print("✅ 发现 Turnstile 组件，启动底层物理模拟点击...")
-        try:
-            sb.uc_gui_click_captcha()
-            time.sleep(4)
-        except Exception as e:
-            print(f"⚠️ 物理点击警告: {e}")
-    else:
-        print("ℹ️ 未发现 Turnstile 组件，可能已静默通过。")
+    if not handle_turnstile(sb):
+        sb.save_screenshot(f"{email}_turnstile_fail.png")
 
     print("🖱️ 提交表单...")
     try:

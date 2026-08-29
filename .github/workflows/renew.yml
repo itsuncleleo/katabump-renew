@@ -30,8 +30,8 @@ jobs:
           LAST_RUN=$(cat katabump_success.txt)
           NOW=$(date +%s)
           DIFF=$(( (NOW - LAST_RUN) / 86400 ))
-          if [ $DIFF -lt 4 ]; then
-            echo "⏳ 距离上次成功不足 4 天，今天已经执行过了，继续休眠！"
+          if [ $DIFF -lt 3 ]; then
+            echo "⏳ 距离上次成功不足 3 天，今天已经执行过了，继续休眠！"
             echo "run_script=false" >> $GITHUB_ENV
             exit 0
           fi
